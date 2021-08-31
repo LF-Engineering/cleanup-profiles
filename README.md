@@ -2,4 +2,4 @@
 Cleanup profiles
 
 Usage:
-- `[DEBUG=1] [SQLDEBUG=1] ./clueanup.sh test|prod`.
+- `[N_CPUS=1] [DEBUG=1] [SQLDEBUG=1] ./clueanup.sh test|prod`.
