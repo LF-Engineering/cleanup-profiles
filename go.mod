@@ -11,7 +11,6 @@ require (
 
 require (
 	github.com/avast/retry-go v3.0.0+incompatible // indirect
-	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
 	github.com/elastic/go-elasticsearch/v8 v8.0.0-20201229214741-2366c2514674 // indirect
 	github.com/google/uuid v1.1.4 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421 // indirect

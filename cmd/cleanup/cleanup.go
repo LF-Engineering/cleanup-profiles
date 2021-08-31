@@ -492,6 +492,17 @@ func cleanupProfiles(db *sqlx.DB) (err error) {
 	if merges > 0 {
 		fmt.Printf("merged %d profiles\n", merges)
 	}
+	if os.Getenv("DELETE_ORPHANED") != "" {
+		res, e := exec(db, nil, "delete from uidentities where uuid not in (select uuid from identities)")
+		if e != nil {
+			errs = append(errs, e)
+		} else {
+			affected, _ := res.RowsAffected()
+			if affected > 0 {
+				fmt.Printf("deleted %d orphaned profiles\n", affected)
+			}
+		}
+	}
 	nErrs := len(errs)
 	if nErrs > 0 {
 		err = fmt.Errorf("%d errors: %+v", nErrs, errs)
