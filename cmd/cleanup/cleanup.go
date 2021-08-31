@@ -17,6 +17,7 @@ import (
 
 var (
 	gSQLOut = false
+	gDebug  = false
 )
 
 func initAffsDB() *sqlx.DB {
@@ -33,6 +34,7 @@ func initAffsDB() *sqlx.DB {
 		log.Panicf("unable to connect to affiliation database: %v", err)
 	}
 	gSQLOut = os.Getenv("SQLDEBUG") != ""
+	gDebug = os.Getenv("DEBUG") != ""
 	return d
 }
 
@@ -164,25 +166,72 @@ func cleanupProfiles(db *sqlx.DB) (err error) {
 		username  *string
 		email     *string
 	)
+	idMap := map[string]string{}
+	uuidMap := map[string]string{}
+	getKey := func(source string, username, email *string) (key string) {
+		key = source
+		if username != nil && *username != "" {
+			key += ":" + *username
+		}
+		if email != nil && *email != "" {
+			key += ":" + *email
+		}
+		return
+	}
 	processIdentity := func(ch chan error, i int) (err error) {
 		defer func() {
 			if ch != nil {
 				ch <- err
 			}
 		}()
-		fmt.Printf("processing %d\n", i)
+		source := sources[i]
+		username := usernames[i]
+		email := emails[i]
+		key := getKey(source, username, email)
+		uuid2, ok := uuidMap[key]
+		if !ok {
+			return
+		}
+		puuid := uuids[i]
+		if puuid == nil {
+			return
+		}
+		uuid := *puuid
+		if uuid == uuid2 {
+			return
+		}
+		id := ids[i]
+		id2, _ := idMap[key]
+		fmt.Printf("found %d (%s,%s) -> (%s,%s)\n", i, id, uuid, id2, uuid2)
 		return
 	}
-	rows, err = query(db, nil, "select id, uuid, source, name, username, email from identities where name like '%%-MISSING-NAME'")
+	rows, err = query(
+		db,
+		nil,
+		"select id, uuid, source, name, username, email from identities where name like '%%-MISSING-NAME' "+
+			"and ((username is not null and trim(username) != '') or (email is not null and trim(email) != ''))",
+	)
 	if err != nil {
 		return
 	}
+	var missingMap map[string]struct{}
+	if gDebug {
+		missingMap = make(map[string]struct{})
+	}
 	thrN := getThreadsNum()
-	fmt.Printf("using %d threads\n", thrN)
+	fmt.Printf("Using %d threads\n", thrN)
 	for rows.Next() {
 		err = rows.Scan(&id, &uuid, &source, &name, &username, &email)
 		if err != nil {
 			return
+		}
+		if gDebug {
+			key := getKey(source, username, email)
+			_, dup := missingMap[key]
+			if dup {
+				fmt.Printf("missing names: non-unique key: %s\n", key)
+			}
+			missingMap[key] = struct{}{}
 		}
 		// log.Println(id, uuid, source, name, username, email)
 		ids = append(ids, id)
@@ -200,6 +249,43 @@ func cleanupProfiles(db *sqlx.DB) (err error) {
 	if err != nil {
 		return
 	}
+	fmt.Printf("%d identities with missing name suffix and non-empty username or email\n", len(ids))
+	rows, err = query(
+		db,
+		nil,
+		"select id, uuid, source, username, email from identities where (name is null or trim(name) = '') "+
+			"and ((username is not null and trim(username) != '') or (email is not null and trim(email) != ''))",
+	)
+	if err != nil {
+		return
+	}
+	emptyMap := map[string]struct{}{}
+	for rows.Next() {
+		err = rows.Scan(&id, &uuid, &source, &username, &email)
+		if err != nil {
+			return
+		}
+		key := getKey(source, username, email)
+		_, dup := emptyMap[key]
+		if dup {
+			fmt.Printf("empty names: non-unique key: %s\n", key)
+			continue
+		}
+		emptyMap[key] = struct{}{}
+		idMap[key] = id
+		if uuid != nil {
+			uuidMap[key] = *uuid
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	err = rows.Close()
+	if err != nil {
+		return
+	}
+	fmt.Printf("%d identities with empty/null name and non-empty username or email\n", len(emptyMap))
 	errs := []error{}
 	if thrN > 0 {
 		ch := make(chan error)
