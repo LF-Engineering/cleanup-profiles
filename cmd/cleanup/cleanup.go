@@ -21,6 +21,7 @@ import (
 	"github.com/LF-Engineering/dev-analytics-libraries/elastic"
 	dahttp "github.com/LF-Engineering/dev-analytics-libraries/http"
 	"github.com/LF-Engineering/dev-analytics-libraries/slack"
+	"github.com/LF-Engineering/dev-analytics-libraries/uuid"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	jsoniter "github.com/json-iterator/go"
@@ -40,10 +41,49 @@ var (
 	// EmailReplacer - replacer for some email buggy characters
 	EmailReplacer = strings.NewReplacer(" at ", "@", " AT ", "@", " At ", "@", " dot ", ".", " DOT ", ".", " Dot ", ".", "<", "", ">", "")
 	// WhiteSpace - one or more whitespace characters
-	WhiteSpace     = regexp.MustCompile(`\s+`)
-	emailsCache    = map[string]bool{}
-	emailsCacheMtx *sync.RWMutex
+	WhiteSpace        = regexp.MustCompile(`\s+`)
+	emailsCache       = map[string]bool{}
+	emailsCacheMtx    *sync.RWMutex
+	uuidsAffsCache    = map[string]string{}
+	uuidsAffsCacheMtx *sync.RWMutex
 )
+
+// uuidAffs - generate UUID of string args
+// uses internal cache
+// downcases arguments, all but first can be empty
+func uuidAffs(args ...string) (h string) {
+	k := strings.Join(args, ":")
+	if MT {
+		uuidsAffsCacheMtx.RLock()
+	}
+	h, ok := uuidsAffsCache[k]
+	if MT {
+		uuidsAffsCacheMtx.RUnlock()
+	}
+	if ok {
+		return
+	}
+	defer func() {
+		if MT {
+			uuidsAffsCacheMtx.Lock()
+		}
+		uuidsAffsCache[k] = h
+		if MT {
+			uuidsAffsCacheMtx.Unlock()
+		}
+	}()
+	var err error
+	if len(args) != 4 {
+		err = fmt.Errorf("GenerateIdentity requires exactly 4 asrguments, got %+v", args)
+	} else {
+		h, err = uuid.GenerateIdentity(&args[0], &args[1], &args[2], &args[3])
+	}
+	if err != nil {
+		fmt.Printf("uuidAffs error for: %+v\n", args)
+		h = ""
+	}
+	return
+}
 
 // isValidDomain - is MX domain valid?
 // uses internal cache
@@ -235,6 +275,7 @@ func getThreadsNum() (thrN int) {
 		MT = thrN > 1
 		if MT {
 			emailsCacheMtx = &sync.RWMutex{}
+			uuidsAffsCacheMtx = &sync.RWMutex{}
 		}
 	}()
 	nCPUsStr := os.Getenv("N_CPUS")
@@ -624,7 +665,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		rows      *sql.Rows
 		mtx       *sync.Mutex
 	)
-	rows, err = query(db, nil, "select id, source, coalesce(name, ''), coalesce(username, ''), coalesce(email, '') from identities where email is not null and trim(email) != ''")
+	rows, err = query(db, nil, "select id, source, coalesce(name, ''), coalesce(username, ''), email from identities where email is not null and trim(email) != ''")
 	if err != nil {
 		return
 	}
@@ -649,7 +690,8 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 	}
 	n := len(ids)
 	fmt.Printf("%d identities with non-empty email\n", n)
-	updates := 0
+	validateDomain := os.Getenv("SKIP_VALIDATE_DOMAIN") == ""
+	updates, mismatch := 0, 0
 	errs := []error{}
 	processIdentity := func(ch chan error, i int) (err error) {
 		defer func() {
@@ -658,15 +700,43 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}()
 		email := emails[i]
-		valid := isValidEmail(email, true)
+		valid := isValidEmail(email, validateDomain)
 		if valid {
 			return
 		}
-		fmt.Printf("processing invalid email #%d: '%s'\n", i, email)
+		if gDebug {
+			fmt.Printf("processing invalid email #%d: '%s'\n", i, email)
+		}
+		id := ids[i]
+		source := sources[i]
+		name := names[i]
+		username := usernames[i]
+		prevUUID := uuidAffs(source, email, name, username)
+		if gDebug && prevUUID != id {
+			fmt.Printf("notice: old ID calculation mismatch for (src=%s,email=%s,name=%s,uname=%s)\n", source, email, name, username)
+		}
+		uuid := uuidAffs(source, "", name, username)
+		// FIXME
+		if 1 == 1 {
+			return
+		}
+		var res sql.Result
+		res, err = exec(db, nil, "update identities set email = '', id = ? where id = ?", uuid, id)
+		if err != nil {
+			return
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			fmt.Printf("no rows affected for (src=%s,email=%s,name=%s,uname=%s)\n", source, email, name, username)
+			return
+		}
 		if mtx != nil {
 			mtx.Lock()
 		}
 		updates++
+		if prevUUID != id {
+			mismatch++
+		}
 		if mtx != nil {
 			mtx.Unlock()
 		}
@@ -705,7 +775,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		}
 	}
 	if updates > 0 {
-		fmt.Printf("updated %d identities\n", updates)
+		fmt.Printf("updated %d identities, UUID mismatch: %d\n", updates, mismatch)
 	}
 	return
 }

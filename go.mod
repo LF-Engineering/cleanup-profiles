@@ -18,5 +18,6 @@ require (
 	github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b // indirect
+	golang.org/x/text v0.3.4 // indirect
 	gopkg.in/resty.v1 v1.12.0 // indirect
 )
