@@ -29,6 +29,7 @@ import (
 
 var (
 	gSQLOut      = false
+	gSQLQuiet    = false
 	gDebug       = false
 	gToken       = ""
 	gTokenMtx    = &sync.Mutex{}
@@ -39,10 +40,10 @@ var (
 	// EmailRegex - regexp to match email address
 	EmailRegex = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
 	// EmailReplacer - replacer for some email buggy characters
-	EmailReplacer = strings.NewReplacer(" at ", "@", " AT ", "@", " At ", "@", " dot ", ".", " DOT ", ".", " Dot ", ".", "<", "", ">", "")
+	EmailReplacer = strings.NewReplacer(" at ", "@", " AT ", "@", " At ", "@", " dot ", ".", " DOT ", ".", " Dot ", ".", "<", "", ">", "", "`", "")
 	// WhiteSpace - one or more whitespace characters
 	WhiteSpace        = regexp.MustCompile(`\s+`)
-	emailsCache       = map[string]bool{}
+	emailsCache       = map[string]string{}
 	emailsCacheMtx    *sync.RWMutex
 	uuidsAffsCache    = map[string]string{}
 	uuidsAffsCacheMtx *sync.RWMutex
@@ -95,19 +96,24 @@ func isValidDomain(domain string) (valid bool) {
 	if MT {
 		emailsCacheMtx.RLock()
 	}
-	valid, ok := emailsCache[domain]
+	dom, ok := emailsCache[domain]
 	if MT {
 		emailsCacheMtx.RUnlock()
 	}
+	valid = dom != ""
 	if ok {
 		// fmt.Printf("domain cache hit: '%s' -> %v\n", domain, valid)
 		return
 	}
 	defer func() {
+		var dom string
+		if valid {
+			dom = domain
+		}
 		if MT {
 			emailsCacheMtx.Lock()
 		}
-		emailsCache[domain] = valid
+		emailsCache[domain] = dom
 		if MT {
 			emailsCacheMtx.Unlock()
 		}
@@ -122,7 +128,7 @@ func isValidDomain(domain string) (valid bool) {
 
 // isValidEmail - is email correct: len, regexp, MX domain
 // uses internal cache
-func isValidEmail(email string, validateDomain bool) (valid bool) {
+func isValidEmail(email string, validateDomain, guess bool) (valid bool, newEmail string) {
 	l := len(email)
 	if l < 6 && l > 254 {
 		return
@@ -130,26 +136,29 @@ func isValidEmail(email string, validateDomain bool) (valid bool) {
 	if MT {
 		emailsCacheMtx.RLock()
 	}
-	valid, ok := emailsCache[email]
+	nEmail, ok := emailsCache[email]
 	if MT {
 		emailsCacheMtx.RUnlock()
 	}
 	if ok {
-		// fmt.Printf("email cache hit: '%s' -> %v\n", email, valid)
+		newEmail = nEmail
+		valid = newEmail != ""
 		return
 	}
 	defer func() {
 		if MT {
 			emailsCacheMtx.Lock()
 		}
-		emailsCache[email] = valid
+		emailsCache[email] = newEmail
 		if MT {
 			emailsCacheMtx.Unlock()
 		}
 	}()
-	email = WhiteSpace.ReplaceAllString(email, " ")
-	email = strings.TrimSpace(EmailReplacer.Replace(email))
-	email = strings.Split(email, " ")[0]
+	if guess {
+		email = WhiteSpace.ReplaceAllString(email, " ")
+		email = strings.TrimSpace(EmailReplacer.Replace(email))
+		email = strings.Split(email, " ")[0]
+	}
 	if !EmailRegex.MatchString(email) {
 		return
 	}
@@ -159,6 +168,7 @@ func isValidEmail(email string, validateDomain bool) (valid bool) {
 			return
 		}
 	}
+	newEmail = email
 	valid = true
 	return
 }
@@ -207,9 +217,9 @@ func queryOut(query string, args ...interface{}) {
 }
 
 // queryDB - query database without transaction
-func queryDB(db *sqlx.DB, query string, args ...interface{}) (rows *sql.Rows, err error) {
+func queryDB(db *sqlx.DB, query string, quiet bool, args ...interface{}) (rows *sql.Rows, err error) {
 	rows, err = db.Query(query, args...)
-	if err != nil || gSQLOut {
+	if !gSQLQuiet && !quiet && (err != nil || gSQLOut) {
 		if err != nil {
 			log.Println("queryDB failed")
 		}
@@ -219,9 +229,9 @@ func queryDB(db *sqlx.DB, query string, args ...interface{}) (rows *sql.Rows, er
 }
 
 // queryTX - query database with transaction
-func queryTX(db *sql.Tx, query string, args ...interface{}) (rows *sql.Rows, err error) {
+func queryTX(db *sql.Tx, query string, quiet bool, args ...interface{}) (rows *sql.Rows, err error) {
 	rows, err = db.Query(query, args...)
-	if err != nil || gSQLOut {
+	if !gSQLQuiet && !quiet && (err != nil || gSQLOut) {
 		if err != nil {
 			log.Println("queryTX failed")
 		}
@@ -233,15 +243,15 @@ func queryTX(db *sql.Tx, query string, args ...interface{}) (rows *sql.Rows, err
 // query - query DB using transaction if provided
 func query(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (*sql.Rows, error) {
 	if tx == nil {
-		return queryDB(db, query, args...)
+		return queryDB(db, query, false, args...)
 	}
-	return queryTX(tx, query, args...)
+	return queryTX(tx, query, false, args...)
 }
 
 // execDB - execute DB query without transaction
-func execDB(db *sqlx.DB, query string, args ...interface{}) (res sql.Result, err error) {
+func execDB(db *sqlx.DB, query string, quiet bool, args ...interface{}) (res sql.Result, err error) {
 	res, err = db.Exec(query, args...)
-	if err != nil || gSQLOut {
+	if !gSQLQuiet && !quiet && (err != nil || gSQLOut) {
 		if err != nil {
 			log.Println("execDB failed")
 		}
@@ -251,9 +261,9 @@ func execDB(db *sqlx.DB, query string, args ...interface{}) (res sql.Result, err
 }
 
 // execTX - execute DB query with transaction
-func execTX(db *sql.Tx, query string, args ...interface{}) (res sql.Result, err error) {
+func execTX(db *sql.Tx, query string, quiet bool, args ...interface{}) (res sql.Result, err error) {
 	res, err = db.Exec(query, args...)
-	if err != nil || gSQLOut {
+	if !gSQLQuiet && !quiet && (err != nil || gSQLOut) {
 		if err != nil {
 			log.Println("execTX failed")
 		}
@@ -265,9 +275,17 @@ func execTX(db *sql.Tx, query string, args ...interface{}) (res sql.Result, err 
 // exec - execute db query with transaction if provided
 func exec(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (sql.Result, error) {
 	if tx == nil {
-		return execDB(db, query, args...)
+		return execDB(db, query, false, args...)
 	}
-	return execTX(tx, query, args...)
+	return execTX(tx, query, false, args...)
+}
+
+// execQuiet - execute db query with transaction if provided
+func execQuiet(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (sql.Result, error) {
+	if tx == nil {
+		return execDB(db, query, true, args...)
+	}
+	return execTX(tx, query, true, args...)
 }
 
 func getThreadsNum() (thrN int) {
@@ -691,7 +709,8 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 	n := len(ids)
 	fmt.Printf("%d identities with non-empty email\n", n)
 	validateDomain := os.Getenv("SKIP_VALIDATE_DOMAIN") == ""
-	updates, mismatch := 0, 0
+	guess := os.Getenv("SKIP_GUESS_EMAIL") == ""
+	cleanups, changes, deleted, mismatch := 0, 0, 0, 0
 	errs := []error{}
 	processIdentity := func(ch chan error, i int) (err error) {
 		defer func() {
@@ -699,48 +718,59 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 				ch <- err
 			}
 		}()
-		email := emails[i]
-		valid := isValidEmail(email, validateDomain)
-		if valid {
+		currEmail := emails[i]
+		valid, email := isValidEmail(currEmail, validateDomain, guess)
+		if valid && email == currEmail {
 			return
 		}
 		if gDebug {
-			fmt.Printf("processing identity invalid email #%d: '%s'\n", i, email)
+			fmt.Printf("processing identity email #%d (valid: %v): '%s'->'%s'\n", i, valid, currEmail, email)
 		}
 		id := ids[i]
 		source := sources[i]
 		name := names[i]
 		username := usernames[i]
-		prevUUID := uuidAffs(source, email, name, username)
+		prevUUID := uuidAffs(source, currEmail, name, username)
 		if gDebug && prevUUID != id {
-			fmt.Printf("notice: old identity ID calculation mismatch for (src=%s,email=%s,name=%s,uname=%s)\n", source, email, name, username)
+			fmt.Printf("notice: old identity ID calculation mismatch for (src=%s,email=%s->%s,name=%s,uname=%s)\n", source, currEmail, email, name, username)
 		}
-		uuid := uuidAffs(source, "", name, username)
+		uuid := uuidAffs(source, email, name, username)
 		var res sql.Result
-		res, err = exec(db, nil, "update identities set email = '', id = ? where id = ?", uuid, id)
+		res, err = execQuiet(db, nil, "update identities set email = ?, id = ? where id = ?", email, uuid, id)
+		del := false
 		if err != nil {
-			fmt.Printf("correct identity with an empty email already exists (src=%s,name=%s,uname=%s), deleting current %s\n", source, name, username, id)
 			if strings.Contains(err.Error(), "Duplicate entry") {
+				fmt.Printf("correct identity already exists #%d (src=%s,name=%s,uname=%s,email=%s->%s), deleting current %s\n", i, source, name, username, currEmail, email, id)
 				res, err = exec(db, nil, "delete from identities where id = ?", id)
 				if err != nil {
 					return
 				}
+				del = true
 			} else {
+				fmt.Printf("error on #%d: update identities set email = '%s', id = '%s' where id = '%s'\n", i, email, uuid, id)
 				return
 			}
 		}
 		affected, _ := res.RowsAffected()
 		if affected == 0 {
-			fmt.Printf("no rows affected for (%s->%s,src=%s,email=%s,name=%s,uname=%s)\n", id, uuid, source, email, name, username)
+			fmt.Printf("no rows affected for (%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", id, uuid, source, currEmail, email, name, username)
 			return
 		}
 		if gDebug {
-			fmt.Printf("affected = %d for (%s->%s,src=%s,email=%s,name=%s,uname=%s)\n", affected, id, uuid, source, email, name, username)
+			fmt.Printf("affected = %d for (%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", affected, id, uuid, source, currEmail, email, name, username)
 		}
 		if mtx != nil {
 			mtx.Lock()
 		}
-		updates++
+		if del {
+			deleted++
+		} else {
+			if valid {
+				changes++
+			} else {
+				cleanups++
+			}
+		}
 		if prevUUID != id {
 			mismatch++
 		}
@@ -781,8 +811,8 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}
 	}
-	if updates > 0 {
-		fmt.Printf("updated %d identities, UUID mismatch: %d\n", updates, mismatch)
+	if cleanups > 0 || changes > 0 {
+		fmt.Printf("identities: cleanups:%d, changes:%d, deleted:%d, mismatch: %d\n", cleanups, changes, deleted, mismatch)
 	}
 	// Profiles
 	rows, err = query(db, nil, "select uuid, email from profiles where email is not null and trim(email) != ''")
@@ -813,39 +843,43 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 	}
 	np := len(puuids)
 	fmt.Printf("%d profiles with non-empty email\n", np)
-	pupdates := 0
+	pcleanups, pchanges := 0, 0
 	processProfile := func(ch chan error, i int) (err error) {
 		defer func() {
 			if ch != nil {
 				ch <- err
 			}
 		}()
-		email := pemails[i]
-		valid := isValidEmail(email, validateDomain)
+		currEmail := pemails[i]
+		valid, email := isValidEmail(email, validateDomain, guess)
 		if valid {
 			return
 		}
 		if gDebug {
-			fmt.Printf("processing profile invalid email #%d: '%s'\n", i, email)
+			fmt.Printf("processing profile email #%d (valid %v): '%s'->'%s'\n", i, valid, currEmail, email)
 		}
 		uuid := puuids[i]
 		var res sql.Result
-		res, err = exec(db, nil, "update profiles set email = '' where uuid = ?", uuid)
+		res, err = exec(db, nil, "update profiles set email = ? where uuid = ?", email, uuid)
 		if err != nil {
 			return
 		}
 		affected, _ := res.RowsAffected()
 		if affected == 0 {
-			fmt.Printf("no rows affected for (uuid=%s,email=%s)\n", uuid, email)
+			fmt.Printf("no rows affected for (uuid=%s,email=%s->%s)\n", uuid, currEmail, email)
 			return
 		}
 		if gDebug {
-			fmt.Printf("affected = %d for (%s,%s)\n", affected, uuid, email)
+			fmt.Printf("affected = %d for (%s,%s->%s)\n", affected, uuid, currEmail, email)
 		}
 		if mtx != nil {
 			mtx.Lock()
 		}
-		pupdates++
+		if valid {
+			pchanges++
+		} else {
+			pcleanups++
+		}
 		if mtx != nil {
 			mtx.Unlock()
 		}
@@ -883,8 +917,8 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}
 	}
-	if pupdates > 0 {
-		fmt.Printf("updated %d profiles\n", pupdates)
+	if pcleanups > 0 || pchanges > 0 {
+		fmt.Printf("profiles: cleanups:%d, changes:%d\n", pcleanups, pchanges)
 	}
 	return
 }
