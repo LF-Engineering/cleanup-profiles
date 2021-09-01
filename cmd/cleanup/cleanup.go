@@ -705,7 +705,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			return
 		}
 		if gDebug {
-			fmt.Printf("processing invalid email #%d: '%s'\n", i, email)
+			fmt.Printf("processing identity invalid email #%d: '%s'\n", i, email)
 		}
 		id := ids[i]
 		source := sources[i]
@@ -713,13 +713,9 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		username := usernames[i]
 		prevUUID := uuidAffs(source, email, name, username)
 		if gDebug && prevUUID != id {
-			fmt.Printf("notice: old ID calculation mismatch for (src=%s,email=%s,name=%s,uname=%s)\n", source, email, name, username)
+			fmt.Printf("notice: old identity ID calculation mismatch for (src=%s,email=%s,name=%s,uname=%s)\n", source, email, name, username)
 		}
 		uuid := uuidAffs(source, "", name, username)
-		// FIXME
-		if 1 == 1 {
-			return
-		}
 		var res sql.Result
 		res, err = exec(db, nil, "update identities set email = '', id = ? where id = ?", uuid, id)
 		if err != nil {
@@ -727,8 +723,11 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		}
 		affected, _ := res.RowsAffected()
 		if affected == 0 {
-			fmt.Printf("no rows affected for (src=%s,email=%s,name=%s,uname=%s)\n", source, email, name, username)
+			fmt.Printf("no rows affected for (%s->%s,src=%s,email=%s,name=%s,uname=%s)\n", id, uuid, source, email, name, username)
 			return
+		}
+		if gDebug {
+			fmt.Printf("affected = %d for (%s->%s,src=%s,email=%s,name=%s,uname=%s)\n", affected, id, uuid, source, email, name, username)
 		}
 		if mtx != nil {
 			mtx.Lock()
@@ -776,6 +775,108 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 	}
 	if updates > 0 {
 		fmt.Printf("updated %d identities, UUID mismatch: %d\n", updates, mismatch)
+	}
+	// Profiles
+	rows, err = query(db, nil, "select uuid, email from profiles where email is not null and trim(email) != ''")
+	if err != nil {
+		return
+	}
+	var (
+		puuid   string
+		pemail  string
+		puuids  []string
+		pemails []string
+	)
+	for rows.Next() {
+		err = rows.Scan(&puuid, &pemail)
+		if err != nil {
+			return
+		}
+		puuids = append(puuids, puuid)
+		pemails = append(pemails, pemail)
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	err = rows.Close()
+	if err != nil {
+		return
+	}
+	np := len(puuids)
+	fmt.Printf("%d profiles with non-empty email\n", np)
+	pupdates := 0
+	processProfile := func(ch chan error, i int) (err error) {
+		defer func() {
+			if ch != nil {
+				ch <- err
+			}
+		}()
+		email := pemails[i]
+		valid := isValidEmail(email, validateDomain)
+		if valid {
+			return
+		}
+		if gDebug {
+			fmt.Printf("processing profile invalid email #%d: '%s'\n", i, email)
+		}
+		uuid := puuids[i]
+		var res sql.Result
+		res, err = exec(db, nil, "update profiles set email = '' where uuid = ?", uuid)
+		if err != nil {
+			return
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			fmt.Printf("no rows affected for (uuid=%s,email=%s)\n", uuid, email)
+			return
+		}
+		if gDebug {
+			fmt.Printf("affected = %d for (%s,%s)\n", affected, uuid, email)
+		}
+		if mtx != nil {
+			mtx.Lock()
+		}
+		pupdates++
+		if mtx != nil {
+			mtx.Unlock()
+		}
+		return
+	}
+	if thrN > 0 {
+		mtx = &sync.Mutex{}
+		ch := make(chan error)
+		nThreads := 0
+		for i := range puuids {
+			go func(ch chan error, i int) {
+				_ = processProfile(ch, i)
+			}(ch, i)
+			nThreads++
+			if nThreads == thrN {
+				e := <-ch
+				nThreads--
+				if e != nil {
+					errs = append(errs, e)
+				}
+			}
+		}
+		for nThreads > 0 {
+			e := <-ch
+			nThreads--
+			if e != nil {
+				errs = append(errs, e)
+			}
+		}
+	} else {
+		for i := range puuids {
+			e := processProfile(nil, i)
+			if e != nil {
+				errs = append(errs, e)
+			}
+		}
+	}
+	if pupdates > 0 {
+		fmt.Printf("updated %d profiles\n", pupdates)
 	}
 	return
 }
