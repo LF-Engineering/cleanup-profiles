@@ -45,11 +45,46 @@ var (
 	emailsCacheMtx *sync.RWMutex
 )
 
+// isValidDomain - is MX domain valid?
+// uses internal cache
+func isValidDomain(domain string) (valid bool) {
+	l := len(domain)
+	if l < 4 && l > 254 {
+		return
+	}
+	if MT {
+		emailsCacheMtx.RLock()
+	}
+	valid, ok := emailsCache[domain]
+	if MT {
+		emailsCacheMtx.RUnlock()
+	}
+	if ok {
+		// fmt.Printf("domain cache hit: '%s' -> %v\n", domain, valid)
+		return
+	}
+	defer func() {
+		if MT {
+			emailsCacheMtx.Lock()
+		}
+		emailsCache[domain] = valid
+		if MT {
+			emailsCacheMtx.Unlock()
+		}
+	}()
+	mx, err := net.LookupMX(domain)
+	if err != nil || len(mx) == 0 {
+		return
+	}
+	valid = true
+	return
+}
+
 // isValidEmail - is email correct: len, regexp, MX domain
 // uses internal cache
 func isValidEmail(email string, validateDomain bool) (valid bool) {
 	l := len(email)
-	if l < 3 && l > 254 {
+	if l < 6 && l > 254 {
 		return
 	}
 	if MT {
@@ -60,6 +95,7 @@ func isValidEmail(email string, validateDomain bool) (valid bool) {
 		emailsCacheMtx.RUnlock()
 	}
 	if ok {
+		// fmt.Printf("email cache hit: '%s' -> %v\n", email, valid)
 		return
 	}
 	defer func() {
@@ -79,8 +115,7 @@ func isValidEmail(email string, validateDomain bool) (valid bool) {
 	}
 	if validateDomain {
 		parts := strings.Split(email, "@")
-		mx, err := net.LookupMX(parts[1])
-		if err != nil || len(mx) == 0 {
+		if len(parts) <= 1 || !isValidDomain(parts[1]) {
 			return
 		}
 	}
@@ -587,6 +622,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		usernames []string
 		emails    []string
 		rows      *sql.Rows
+		mtx       *sync.Mutex
 	)
 	rows, err = query(db, nil, "select id, source, coalesce(name, ''), coalesce(username, ''), coalesce(email, '') from identities where email is not null and trim(email) != ''")
 	if err != nil {
@@ -622,14 +658,22 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}()
 		email := emails[i]
-		valid := isValidEmail(email, false)
+		valid := isValidEmail(email, true)
 		if valid {
 			return
 		}
 		fmt.Printf("processing invalid email #%d: '%s'\n", i, email)
+		if mtx != nil {
+			mtx.Lock()
+		}
+		updates++
+		if mtx != nil {
+			mtx.Unlock()
+		}
 		return
 	}
 	if thrN > 0 {
+		mtx = &sync.Mutex{}
 		ch := make(chan error)
 		nThreads := 0
 		for i := range ids {
@@ -680,6 +724,9 @@ func main() {
 		err := cleanupEmails(db)
 		if err != nil {
 			fmt.Printf("cleanup emails error: %+v\n", err)
+		}
+		if gDebug {
+			fmt.Printf("email cache:\n%+v\n", emailsCache)
 		}
 	}
 }
