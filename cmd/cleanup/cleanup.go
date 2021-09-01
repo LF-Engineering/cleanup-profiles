@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,7 +33,60 @@ var (
 	gTokenMtx    = &sync.Mutex{}
 	gAuth0Client *auth0.ClientProvider
 	gTokenEnv    string
+	// MT - multithreading?
+	MT bool
+	// EmailRegex - regexp to match email address
+	EmailRegex = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
+	// EmailReplacer - replacer for some email buggy characters
+	EmailReplacer = strings.NewReplacer(" at ", "@", " AT ", "@", " At ", "@", " dot ", ".", " DOT ", ".", " Dot ", ".", "<", "", ">", "")
+	// WhiteSpace - one or more whitespace characters
+	WhiteSpace     = regexp.MustCompile(`\s+`)
+	emailsCache    = map[string]bool{}
+	emailsCacheMtx *sync.RWMutex
 )
+
+// isValidEmail - is email correct: len, regexp, MX domain
+// uses internal cache
+func isValidEmail(email string, validateDomain bool) (valid bool) {
+	l := len(email)
+	if l < 3 && l > 254 {
+		return
+	}
+	if MT {
+		emailsCacheMtx.RLock()
+	}
+	valid, ok := emailsCache[email]
+	if MT {
+		emailsCacheMtx.RUnlock()
+	}
+	if ok {
+		return
+	}
+	defer func() {
+		if MT {
+			emailsCacheMtx.Lock()
+		}
+		emailsCache[email] = valid
+		if MT {
+			emailsCacheMtx.Unlock()
+		}
+	}()
+	email = WhiteSpace.ReplaceAllString(email, " ")
+	email = strings.TrimSpace(EmailReplacer.Replace(email))
+	email = strings.Split(email, " ")[0]
+	if !EmailRegex.MatchString(email) {
+		return
+	}
+	if validateDomain {
+		parts := strings.Split(email, "@")
+		mx, err := net.LookupMX(parts[1])
+		if err != nil || len(mx) == 0 {
+			return
+		}
+	}
+	valid = true
+	return
+}
 
 func initAffsDB() *sqlx.DB {
 	dbURL := os.Getenv("DB_ENDPOINT")
@@ -140,7 +195,13 @@ func exec(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (sql.Resul
 	return execTX(tx, query, args...)
 }
 
-func getThreadsNum() int {
+func getThreadsNum() (thrN int) {
+	defer func() {
+		MT = thrN > 1
+		if MT {
+			emailsCacheMtx = &sync.RWMutex{}
+		}
+	}()
 	nCPUsStr := os.Getenv("N_CPUS")
 	nCPUs := 0
 	if nCPUsStr != "" {
@@ -156,11 +217,12 @@ func getThreadsNum() int {
 			nCPUs = n
 		}
 		runtime.GOMAXPROCS(nCPUs)
-		return nCPUs
+		thrN = nCPUs
+		return
 	}
-	thrN := runtime.NumCPU()
+	thrN = runtime.NumCPU()
 	runtime.GOMAXPROCS(thrN)
-	return thrN
+	return
 }
 
 func initializeAuth0() error {
@@ -513,6 +575,94 @@ func cleanupProfiles(db *sqlx.DB) (err error) {
 func cleanupEmails(db *sqlx.DB) (err error) {
 	thrN := getThreadsNum()
 	fmt.Printf("Using %d threads\n", thrN)
+	var (
+		id        string
+		source    string
+		name      string
+		username  string
+		email     string
+		ids       []string
+		sources   []string
+		names     []string
+		usernames []string
+		emails    []string
+		rows      *sql.Rows
+	)
+	rows, err = query(db, nil, "select id, source, coalesce(name, ''), coalesce(username, ''), coalesce(email, '') from identities where email is not null and trim(email) != ''")
+	if err != nil {
+		return
+	}
+	for rows.Next() {
+		err = rows.Scan(&id, &source, &name, &username, &email)
+		if err != nil {
+			return
+		}
+		ids = append(ids, id)
+		sources = append(sources, source)
+		names = append(names, name)
+		usernames = append(usernames, username)
+		emails = append(emails, email)
+	}
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+	err = rows.Close()
+	if err != nil {
+		return
+	}
+	n := len(ids)
+	fmt.Printf("%d identities with non-empty email\n", n)
+	updates := 0
+	errs := []error{}
+	processIdentity := func(ch chan error, i int) (err error) {
+		defer func() {
+			if ch != nil {
+				ch <- err
+			}
+		}()
+		email := emails[i]
+		valid := isValidEmail(email, false)
+		if valid {
+			return
+		}
+		fmt.Printf("processing invalid email #%d: '%s'\n", i, email)
+		return
+	}
+	if thrN > 0 {
+		ch := make(chan error)
+		nThreads := 0
+		for i := range ids {
+			go func(ch chan error, i int) {
+				_ = processIdentity(ch, i)
+			}(ch, i)
+			nThreads++
+			if nThreads == thrN {
+				e := <-ch
+				nThreads--
+				if e != nil {
+					errs = append(errs, e)
+				}
+			}
+		}
+		for nThreads > 0 {
+			e := <-ch
+			nThreads--
+			if e != nil {
+				errs = append(errs, e)
+			}
+		}
+	} else {
+		for i := range ids {
+			e := processIdentity(nil, i)
+			if e != nil {
+				errs = append(errs, e)
+			}
+		}
+	}
+	if updates > 0 {
+		fmt.Printf("updated %d identities\n", updates)
+	}
 	return
 }
 
