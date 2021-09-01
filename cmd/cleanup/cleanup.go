@@ -510,10 +510,26 @@ func cleanupProfiles(db *sqlx.DB) (err error) {
 	return
 }
 
+func cleanupEmails(db *sqlx.DB) (err error) {
+	thrN := getThreadsNum()
+	fmt.Printf("Using %d threads\n", thrN)
+	return
+}
+
 func main() {
 	db := initAffsDB()
-	err := cleanupProfiles(db)
-	if err != nil {
-		fmt.Printf("error: %+v\n", err)
+	op := os.Getenv("CLEANUP_PROFILES") != ""
+	if op {
+		err := cleanupProfiles(db)
+		if err != nil {
+			fmt.Printf("cleanup profiles error: %+v\n", err)
+		}
+	}
+	op = os.Getenv("CLEANUP_EMAILS") != ""
+	if op {
+		err := cleanupEmails(db)
+		if err != nil {
+			fmt.Printf("cleanup emails error: %+v\n", err)
+		}
 	}
 }
