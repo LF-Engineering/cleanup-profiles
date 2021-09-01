@@ -719,7 +719,15 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		var res sql.Result
 		res, err = exec(db, nil, "update identities set email = '', id = ? where id = ?", uuid, id)
 		if err != nil {
-			return
+			fmt.Printf("correct identity with an empty email already exists (src=%s,name=%s,uname=%s), deleting current %s\n", source, name, username, id)
+			if strings.Contains(err.Error(), "Duplicate entry") {
+				res, err = exec(db, nil, "delete from identities where id = ?", id)
+				if err != nil {
+					return
+				}
+			} else {
+				return
+			}
 		}
 		affected, _ := res.RowsAffected()
 		if affected == 0 {
