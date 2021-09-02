@@ -737,6 +737,8 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 	fmt.Printf("%d identities with non-empty email\n", n)
 	validateDomain := os.Getenv("SKIP_VALIDATE_DOMAIN") == ""
 	guess := os.Getenv("SKIP_GUESS_EMAIL") == ""
+	skipIdentities := os.Getenv("SKIP_IDENTITIES") != ""
+	skipProfiles := os.Getenv("SKIP_PROFILES") != ""
 	cleanups, changes, deleted, mismatch := 0, 0, 0, 0
 	errs := []error{}
 	processIdentity := func(ch chan error, i int) (err error) {
@@ -809,35 +811,37 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		}
 		return
 	}
-	if thrN > 0 {
-		mtx = &sync.Mutex{}
-		ch := make(chan error)
-		nThreads := 0
-		for i := range ids {
-			go func(ch chan error, i int) {
-				_ = processIdentity(ch, i)
-			}(ch, i)
-			nThreads++
-			if nThreads == thrN {
+	if !skipIdentities {
+		if thrN > 0 {
+			mtx = &sync.Mutex{}
+			ch := make(chan error)
+			nThreads := 0
+			for i := range ids {
+				go func(ch chan error, i int) {
+					_ = processIdentity(ch, i)
+				}(ch, i)
+				nThreads++
+				if nThreads == thrN {
+					e := <-ch
+					nThreads--
+					if e != nil {
+						errs = append(errs, e)
+					}
+				}
+			}
+			for nThreads > 0 {
 				e := <-ch
 				nThreads--
 				if e != nil {
 					errs = append(errs, e)
 				}
 			}
-		}
-		for nThreads > 0 {
-			e := <-ch
-			nThreads--
-			if e != nil {
-				errs = append(errs, e)
-			}
-		}
-	} else {
-		for i := range ids {
-			e := processIdentity(nil, i)
-			if e != nil {
-				errs = append(errs, e)
+		} else {
+			for i := range ids {
+				e := processIdentity(nil, i)
+				if e != nil {
+					errs = append(errs, e)
+				}
 			}
 		}
 	}
@@ -881,8 +885,8 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}()
 		currEmail := pemails[i]
-		valid, email := isValidEmail(email, validateDomain, guess)
-		if valid {
+		valid, email := isValidEmail(currEmail, validateDomain, guess)
+		if valid && email == currEmail {
 			return
 		}
 		if gDebug {
@@ -918,35 +922,37 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		}
 		return
 	}
-	if thrN > 0 {
-		mtx = &sync.Mutex{}
-		ch := make(chan error)
-		nThreads := 0
-		for i := range puuids {
-			go func(ch chan error, i int) {
-				_ = processProfile(ch, i)
-			}(ch, i)
-			nThreads++
-			if nThreads == thrN {
+	if !skipProfiles {
+		if thrN > 0 {
+			mtx = &sync.Mutex{}
+			ch := make(chan error)
+			nThreads := 0
+			for i := range puuids {
+				go func(ch chan error, i int) {
+					_ = processProfile(ch, i)
+				}(ch, i)
+				nThreads++
+				if nThreads == thrN {
+					e := <-ch
+					nThreads--
+					if e != nil {
+						errs = append(errs, e)
+					}
+				}
+			}
+			for nThreads > 0 {
 				e := <-ch
 				nThreads--
 				if e != nil {
 					errs = append(errs, e)
 				}
 			}
-		}
-		for nThreads > 0 {
-			e := <-ch
-			nThreads--
-			if e != nil {
-				errs = append(errs, e)
-			}
-		}
-	} else {
-		for i := range puuids {
-			e := processProfile(nil, i)
-			if e != nil {
-				errs = append(errs, e)
+		} else {
+			for i := range puuids {
+				e := processProfile(nil, i)
+				if e != nil {
+					errs = append(errs, e)
+				}
 			}
 		}
 	}
