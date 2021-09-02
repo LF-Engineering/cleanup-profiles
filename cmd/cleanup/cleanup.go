@@ -757,7 +757,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			return
 		}
 		// if gDebug {
-		fmt.Printf("processed identity (valid=%v,%d,%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", valid, affected, id, uuid, source, currEmail, email, name, username)
+		fmt.Printf("processed identity (valid=%v,del=%v,%d,%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", valid, del, affected, id, uuid, source, currEmail, email, name, username)
 		// }
 		if mtx != nil {
 			mtx.Lock()
