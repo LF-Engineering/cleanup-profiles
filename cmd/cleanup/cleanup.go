@@ -121,7 +121,7 @@ func isValidDomain(domain string) (valid bool) {
 	}()
 	for i := 0; i < 10; i++ {
 		mx, err := net.LookupMX(domain)
-		if err == nil && len(mx) > 1 {
+		if err == nil && len(mx) > 0 {
 			valid = true
 			break
 		}
@@ -129,7 +129,7 @@ func isValidDomain(domain string) (valid bool) {
 	if !valid {
 		for i := 1; i <= 3; i++ {
 			mx, err := net.LookupMX(domain)
-			if err == nil && len(mx) > 1 {
+			if err == nil && len(mx) > 0 {
 				valid = true
 				break
 			}
