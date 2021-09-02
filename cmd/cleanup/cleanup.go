@@ -119,11 +119,23 @@ func isValidDomain(domain string) (valid bool) {
 			emailsCacheMtx.Unlock()
 		}
 	}()
-	mx, err := net.LookupMX(domain)
-	if err != nil || len(mx) == 0 {
-		return
+	for i := 0; i < 10; i++ {
+		mx, err := net.LookupMX(domain)
+		if err == nil && len(mx) > 1 {
+			valid = true
+			break
+		}
 	}
-	valid = true
+	if !valid {
+		for i := 1; i <= 3; i++ {
+			mx, err := net.LookupMX(domain)
+			if err == nil && len(mx) > 1 {
+				valid = true
+				break
+			}
+			time.Sleep(time.Duration(i) * time.Second)
+		}
+	}
 	return
 }
 
