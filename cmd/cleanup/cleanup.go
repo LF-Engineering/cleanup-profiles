@@ -31,6 +31,7 @@ var (
 	gSQLOut      = false
 	gSQLQuiet    = false
 	gDebug       = false
+	gDry         = false
 	gToken       = ""
 	gTokenMtx    = &sync.Mutex{}
 	gAuth0Client *auth0.ClientProvider
@@ -188,11 +189,15 @@ func initAffsDB() *sqlx.DB {
 	}
 	gSQLOut = os.Getenv("SQLDEBUG") != ""
 	gDebug = os.Getenv("DEBUG") != ""
+	gDry = os.Getenv("DRY") != ""
 	return d
 }
 
 // queryOut - display DB query
 func queryOut(query string, args ...interface{}) {
+	if gDry {
+		query = "dry-run: " + query
+	}
 	log.Println(query)
 	str := ""
 	if len(args) > 0 {
@@ -274,6 +279,12 @@ func execTX(db *sql.Tx, query string, quiet bool, args ...interface{}) (res sql.
 
 // exec - execute db query with transaction if provided
 func exec(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (sql.Result, error) {
+	if gDry {
+		if gDebug || gSQLOut {
+			queryOut(query, args...)
+		}
+		return nil, nil
+	}
 	if tx == nil {
 		return execDB(db, query, false, args...)
 	}
@@ -282,6 +293,12 @@ func exec(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (sql.Resul
 
 // execQuiet - execute db query with transaction if provided
 func execQuiet(db *sqlx.DB, tx *sql.Tx, query string, args ...interface{}) (sql.Result, error) {
+	if gDry {
+		if gDebug || gSQLOut {
+			queryOut(query, args...)
+		}
+		return nil, nil
+	}
 	if tx == nil {
 		return execDB(db, query, true, args...)
 	}
@@ -652,7 +669,7 @@ func cleanupProfiles(db *sqlx.DB) (err error) {
 		res, e := exec(db, nil, "delete from uidentities where uuid not in (select uuid from identities)")
 		if e != nil {
 			errs = append(errs, e)
-		} else {
+		} else if !gDry {
 			affected, _ := res.RowsAffected()
 			if affected > 0 {
 				fmt.Printf("deleted %d orphaned profiles\n", affected)
@@ -751,10 +768,13 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 				return
 			}
 		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			fmt.Printf("no rows affected for (%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", id, uuid, source, currEmail, email, name, username)
-			return
+		affected := int64(-1)
+		if !gDry {
+			affected, _ = res.RowsAffected()
+			if affected == 0 {
+				fmt.Printf("no rows affected for (%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", id, uuid, source, currEmail, email, name, username)
+				return
+			}
 		}
 		// if gDebug {
 		fmt.Printf("processed identity (valid=%v,del=%v,%d,%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", valid, del, affected, id, uuid, source, currEmail, email, name, username)
@@ -864,10 +884,13 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 		if err != nil {
 			return
 		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			fmt.Printf("no rows affected for (uuid=%s,email=%s->%s)\n", uuid, currEmail, email)
-			return
+		affected := int64(-1)
+		if !gDry {
+			affected, _ := res.RowsAffected()
+			if affected == 0 {
+				fmt.Printf("no rows affected for (uuid=%s,email=%s->%s)\n", uuid, currEmail, email)
+				return
+			}
 		}
 		// if gDebug {
 		fmt.Printf("processed profile (valid=%v,%d,%s,%s->%s)\n", valid, affected, uuid, currEmail, email)
