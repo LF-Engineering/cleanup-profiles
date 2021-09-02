@@ -946,6 +946,22 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 	return
 }
 
+func checkEmails() {
+	validateDomain := os.Getenv("SKIP_VALIDATE_DOMAIN") == ""
+	guess := os.Getenv("SKIP_GUESS_EMAIL") == ""
+	emailsStr := os.Getenv("CHECK_EMAILS")
+	emailsAry := strings.Split(emailsStr, ",")
+	fmt.Printf("Checking %d emails, domain validation: %v, guessing: %v\n", len(emailsAry), validateDomain, guess)
+	for i, email := range emailsAry {
+		valid, email2 := isValidEmail(email, validateDomain, guess)
+		msg := fmt.Sprintf("#%d: email: '%s': valid: %v", i, email, valid)
+		if guess && valid && email2 != email {
+			msg += ", guessed: '" + email2 + "'"
+		}
+		fmt.Printf("%s\n", msg)
+	}
+}
+
 func main() {
 	db := initAffsDB()
 	op := os.Getenv("CLEANUP_PROFILES") != ""
@@ -964,5 +980,9 @@ func main() {
 		if gDebug {
 			fmt.Printf("email cache:\n%+v\n", emailsCache)
 		}
+	}
+	op = os.Getenv("CHECK_EMAILS") != ""
+	if op {
+		checkEmails()
 	}
 }
