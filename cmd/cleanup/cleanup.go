@@ -770,6 +770,9 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			fmt.Printf("notice: old identity ID calculation mismatch for (src=%s,email=%s->%s,name=%s,uname=%s)\n", source, currEmail, email, name, username)
 		}
 		uuid := uuidAffs(source, email, name, username)
+		if prevUUID == "" || uuid == "" {
+			fmt.Printf("prev uuid is empty or new uuid is empty: '%s', '%s', skipping\n", prevUUID, uuid)
+		}
 		var res sql.Result
 		res, err = execQuiet(db, nil, "update identities set email = ?, id = ? where id = ?", email, uuid, id)
 		del := false
