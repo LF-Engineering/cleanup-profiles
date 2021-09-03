@@ -798,7 +798,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}
 		// if gDebug {
-		fmt.Printf("processed identity (valid=%v,del=%v,%d,%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", valid, del, affected, id, uuid, source, currEmail, email, name, username)
+		fmt.Printf("processed #%d identity (valid=%v,del=%v,%d,%s->%s,src=%s,email=%s->%s,name=%s,uname=%s)\n", i, valid, del, affected, id, uuid, source, currEmail, email, name, username)
 		// }
 		if mtx != nil {
 			mtx.Lock()
@@ -916,7 +916,7 @@ func cleanupEmails(db *sqlx.DB) (err error) {
 			}
 		}
 		// if gDebug {
-		fmt.Printf("processed profile (valid=%v,%d,%s,%s->%s)\n", valid, affected, uuid, currEmail, email)
+		fmt.Printf("processed #%d profile (valid=%v,%d,%s,%s->%s)\n", i, valid, affected, uuid, currEmail, email)
 		// }
 		if mtx != nil {
 			mtx.Lock()
