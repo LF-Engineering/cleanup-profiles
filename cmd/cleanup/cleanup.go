@@ -414,6 +414,12 @@ func getAPIToken() (string, error) {
 }
 
 func executeAffiliationsAPICall(apiPath, path string) (err error) {
+	if gDry {
+		if gDebug {
+			fmt.Printf("dry-run API call: '%s'\n", path)
+		}
+		return
+	}
 	if apiPath == "" {
 		err = fmt.Errorf("Cannot execute DA affiliation API calls, no API URL specified")
 		return
